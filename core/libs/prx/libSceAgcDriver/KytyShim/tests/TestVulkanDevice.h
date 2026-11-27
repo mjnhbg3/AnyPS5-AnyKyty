@@ -15,7 +15,7 @@ struct TestVulkanDevice {
 	vk::detail::DynamicLoader loader;
 	Libs::Graphics::GraphicContext graphics;
 
-	const char* Initialize(bool require_tiling = false) {
+	const char* Initialize(bool require_tiling = false, bool requireNonuniformStorageBuffers = false) {
 		if (!loader.success()) {
 			return "Vulkan loader unavailable";
 		}
@@ -36,7 +36,7 @@ struct TestVulkanDevice {
 			return "Vulkan device enumeration failed";
 		}
 		for (const auto device : devices.value) {
-			if (InitializeDevice(device, require_tiling)) {
+			if (InitializeDevice(device, require_tiling, requireNonuniformStorageBuffers)) {
 				return nullptr;
 			}
 		}
@@ -56,7 +56,8 @@ struct TestVulkanDevice {
 	}
 
 private:
-	bool InitializeDevice(vk::PhysicalDevice physical, bool require_tiling) {
+	bool InitializeDevice(vk::PhysicalDevice physical, bool require_tiling,
+	                      bool requireNonuniformStorageBuffers) {
 		vk::PhysicalDeviceVulkan12Properties limits {};
 		vk::PhysicalDeviceVulkan11Properties properties11 {.pNext = &limits};
 		vk::PhysicalDeviceProperties2 properties {.pNext = &properties11};
@@ -96,6 +97,7 @@ private:
 		    !supported_robustness.nullDescriptor ||
 		    (require_tiling && (!supported11.storageBuffer16BitAccess ||
 		                        !supported12.storageBuffer8BitAccess)) ||
+		    (requireNonuniformStorageBuffers && !supported12.shaderStorageBufferArrayNonUniformIndexing) ||
 		    !supported12.descriptorBindingSampledImageUpdateAfterBind ||
 		    !supported12.descriptorBindingUpdateUnusedWhilePending ||
 		    !supported12.descriptorBindingPartiallyBound || !supported12.hostQueryReset ||
@@ -107,6 +109,7 @@ private:
 		vk::PhysicalDeviceVulkan12Features features12 {
 		    .pNext = &robustness,
 		    .storageBuffer8BitAccess = require_tiling,
+		    .shaderStorageBufferArrayNonUniformIndexing = requireNonuniformStorageBuffers,
 		    .descriptorBindingSampledImageUpdateAfterBind = VK_TRUE,
 		    .descriptorBindingUpdateUnusedWhilePending = VK_TRUE,
 		    .descriptorBindingPartiallyBound = VK_TRUE,
