@@ -494,6 +494,22 @@ add_test(NAME kyty_shim_mesh_per_primitive_block_draw COMMAND kyty_shim_mesh_per
 set_tests_properties(kyty_shim_mesh_per_primitive_block_draw PROPERTIES TIMEOUT 20 SKIP_RETURN_CODE 77
         PASS_REGULAR_EXPRESSION "kyty_shim_mesh_per_primitive_block_draw: ok" FAIL_REGULAR_EXPRESSION "terminate called|FAILED")
 
+if(NOT ANYPS5_KYTY_DLL AND (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
+    add_test_executable(kyty_shim_descriptor_pool_capacity_tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/DescriptorPoolCapacity.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/Log.cpp)
+    target_include_directories(kyty_shim_descriptor_pool_capacity_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    configure_host_test_executable(kyty_shim_descriptor_pool_capacity_tests)
+    if(MINGW)
+        target_link_libraries(kyty_shim_descriptor_pool_capacity_tests PRIVATE stdc++ gcc_eh)
+    endif()
+    target_link_libraries(kyty_shim_descriptor_pool_capacity_tests PRIVATE
+            "$<TARGET_GENEX_EVAL:kyty_shim_descriptor_pool_capacity_tests,$<TARGET_PROPERTY:Kyty::gpu,INTERFACE_LINK_LIBRARIES>>"
+            Kyty::gpu libSceAgcDriver libkernel libc)
+    add_test(NAME kyty_shim_descriptor_pool_capacity COMMAND kyty_shim_descriptor_pool_capacity_tests)
+    set_tests_properties(kyty_shim_descriptor_pool_capacity PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77
+            FAIL_REGULAR_EXPRESSION "FAILED|VUID-")
+endif()
+
 if(NOT ANYPS5_KYTY_DLL)
     add_test_executable(kyty_shim_recompiler_robustness_tests ${CMAKE_CURRENT_SOURCE_DIR}/RecompilerRobustness.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/Log.cpp)
     target_include_directories(kyty_shim_recompiler_robustness_tests PRIVATE ${LIBS_INCLUDE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../fuzz)
