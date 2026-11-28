@@ -514,6 +514,29 @@ static uint32_t EmitUFloatToF32Bits(EmitterState& state, uint32_t raw, uint32_t 
 	return EmitBitcastF32ToU32(state, result);
 }
 
+static uint32_t EmitUnormToF32Bits(EmitterState& state, uint32_t raw, uint32_t bits) {
+	if (bits == 0u || bits > 32u) EXIT("normalized component width is unsupported: %u\n", bits);
+	const auto zero = EmitCompareU32Constant(state, spv::OpIEqual, raw, 0u);
+	const auto safe = EmitSelectValueU32(state, zero, ConstantU32(state, 1u), raw);
+	const auto msb = EmitFindUMsb32(state, safe);
+	auto pattern = EmitBinaryU32(state, spv::OpShiftLeftLogical, safe,
+	                             EmitBinaryU32(state, spv::OpISub, ConstantU32(state, 31u), msb));
+	for (uint32_t shift = bits; shift < 32u; shift *= 2u) {
+		pattern = EmitOrU32(state, pattern,
+		                    EmitBinaryU32(state, spv::OpShiftRightLogical, pattern, ConstantU32(state, shift)));
+	}
+	const auto guard = EmitAndConstant(state,
+	                               EmitBinaryU32(state, spv::OpShiftRightLogical, pattern,
+	                                             ConstantU32(state, 7u)), 1u);
+	const auto rounded = EmitAddU32(state,
+	                                EmitBinaryU32(state, spv::OpShiftRightLogical, pattern,
+	                                              ConstantU32(state, 8u)), guard);
+	const auto exponent = EmitBinaryU32(state, spv::OpShiftLeftLogical,
+	                                    EmitAddU32(state, msb, ConstantU32(state, 126u - bits)),
+	                                    ConstantU32(state, 23u));
+	return EmitSelectValueU32(state, zero, ConstantU32(state, 0u), EmitAddU32(state, exponent, rounded));
+}
+
 uint32_t NormalizeFormatComponent(EmitterState& state, const Format::BufferFormatInfo& info,
                                   uint32_t component, uint32_t raw) {
 	const auto bits = info.component_bits[component];
@@ -531,27 +554,20 @@ uint32_t NormalizeFormatComponent(EmitterState& state, const Format::BufferForma
 			state.builder.AddFunction(spv::OpConvertSToF, TypeF32(state), value, signed_raw);
 			return EmitBitcastF32ToU32(state, value);
 		}
-		case Format::ComponentType::Unorm: {
-			const auto value      = state.builder.AllocateId();
-			const auto normalized = state.builder.AllocateId();
-			const auto max_value  = static_cast<float>((1u << bits) - 1u);
-			state.builder.AddFunction(spv::OpConvertUToF, TypeF32(state), value, raw);
-			state.builder.AddFunction(spv::OpFDiv, TypeF32(state), normalized, value,
-			                          ConstantF32Value(state, max_value));
-			return EmitBitcastF32ToU32(state, normalized);
-		}
+		case Format::ComponentType::Unorm: return EmitUnormToF32Bits(state, raw, bits);
 		case Format::ComponentType::Snorm: {
-			const auto signed_raw = EmitTBufferBitcastU32ToI32(state, raw);
-			const auto value      = state.builder.AllocateId();
-			const auto normalized = state.builder.AllocateId();
-			const auto clamped    = state.builder.AllocateId();
-			const auto max_value  = static_cast<float>((1u << (bits - 1u)) - 1u);
-			state.builder.AddFunction(spv::OpConvertSToF, TypeF32(state), value, signed_raw);
-			state.builder.AddFunction(spv::OpFDiv, TypeF32(state), normalized, value,
-			                          ConstantF32Value(state, max_value));
-			state.builder.AddFunction(spv::OpExtInst, TypeF32(state), clamped, GlslStd450(state),
-			                          GLSLstd450FMax, normalized, ConstantF32Value(state, -1.0f));
-			return EmitBitcastF32ToU32(state, clamped);
+			if (bits < 2u || bits > 32u) EXIT("signed normalized component width is unsupported: %u\n", bits);
+			const auto negative = Binary(state, spv::OpSLessThan, TypeBool(state),
+			                             EmitTBufferBitcastU32ToI32(state, raw),
+			                             ConstantI32(state, 0));
+			const auto magnitude = EmitSelectValueU32(state, negative,
+			                                          EmitBinaryU32(state, spv::OpISub,
+			                                                        ConstantU32(state, 0u), raw), raw);
+			const auto clamped = EmitUMin32(state, magnitude,
+			                                ConstantU32(state, (1u << (bits - 1u)) - 1u));
+			const auto sign = EmitSelectValueU32(state, negative, ConstantU32(state, 0x80000000u),
+			                                     ConstantU32(state, 0u));
+			return EmitOrU32(state, sign, EmitUnormToF32Bits(state, clamped, bits - 1u));
 		}
 		case Format::ComponentType::Float:
 			if (bits == 32u) {

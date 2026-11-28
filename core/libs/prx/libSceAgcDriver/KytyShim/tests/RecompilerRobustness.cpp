@@ -3,11 +3,13 @@
 #include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 #include "graphics/shader/recompiler/ir/passes/ConstantPropagation.h"
 #include "graphics/shader/recompiler/ir/passes/DeadCodeElimination.h"
+#include "spirv/unified1/GLSL.std.450.h"
 #include "spirv/unified1/spirv.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <initializer_list>
 #include <map>
 #include <memory>
 #include <set>
@@ -137,6 +139,43 @@ bool HasMinLodCapability(std::span<const uint32_t> words) {
 		offset += count;
 	}
 	return false;
+}
+
+bool NormalizedFormatExactSpirv() {
+	for (const uint32_t format: {1u, 2u, 7u, 8u}) {
+		const uint32_t load = 0xe8001000u | ((format & 0xfu) << 19u) | ((format >> 4u) << 23u);
+		const std::vector<uint32_t> code = {0x34020084u, load, 0x80000201u, 0xbf8c0000u,
+		                                    0xe0701000u, 0x80010201u, 0xbf810000u};
+		std::string refusal;
+		bool emitted = false;
+		std::vector<uint32_t> spirv;
+		KytyFuzz::Run(code, 0x02, 0x00, &refusal, &emitted, nullptr, &spirv);
+		std::string validation;
+		if (!emitted || !KytyFuzz::Valid(spirv, validation)) {
+			std::printf("normalized-format-exact-spirv: FAILED format %u: %s %s\n",
+			            format, refusal.c_str(), validation.c_str());
+			return false;
+		}
+		bool found_msb = false;
+		for (size_t offset = 5u; offset < spirv.size();) {
+			const uint32_t count = spirv[offset] >> 16u;
+			if (count == 0u || count > spirv.size() - offset) return false;
+			const auto opcode = static_cast<spv::Op>(spirv[offset] & 0xffffu);
+			if (opcode == spv::OpFDiv) {
+				std::printf("normalized-format-exact-spirv: FAILED format %u contains OpFDiv\n", format);
+				return false;
+			}
+			if (opcode == spv::OpExtInst && count >= 5u && spirv[offset + 4u] == GLSLstd450FindUMsb) {
+				found_msb = true;
+			}
+			offset += count;
+		}
+		if (!found_msb) {
+			std::printf("normalized-format-exact-spirv: FAILED format %u has no integer normalization\n", format);
+			return false;
+		}
+	}
+	return true;
 }
 
 bool MinLodFeature() {
@@ -758,6 +797,11 @@ int main(int argc, char** argv) {
 		found = true;
 		if (!MinLodFeature()) return 1;
 		std::printf("min-lod-feature: ok\n");
+	}
+	if (argc < 2 || std::string_view(argv[1]) == "normalized-format-exact-spirv") {
+		found = true;
+		if (!NormalizedFormatExactSpirv()) return 1;
+		std::printf("normalized-format-exact-spirv: ok\n");
 	}
 	for (const auto& entry: Cases) {
 		if (argc >= 2 && std::string_view(argv[1]) != entry.name) continue;

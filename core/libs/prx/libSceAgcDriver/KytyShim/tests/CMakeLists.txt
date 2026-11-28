@@ -999,6 +999,16 @@ target_link_libraries(kyty_shim_packed_unorm_blend_tests PRIVATE Kyty::gpu libke
 set_target_properties(kyty_shim_packed_unorm_blend_tests PROPERTIES CXX_EXTENSIONS OFF)
 add_test(NAME kyty_shim_packed_unorm_blend COMMAND kyty_shim_packed_unorm_blend_tests)
 set_tests_properties(kyty_shim_packed_unorm_blend PROPERTIES TIMEOUT 120)
+add_test_executable(kyty_shim_formatted_buffer_norm_tests ${CMAKE_CURRENT_SOURCE_DIR}/FormattedBufferNorm.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../Execution/src/FrameCapture.cpp)
+target_include_directories(kyty_shim_formatted_buffer_norm_tests PRIVATE ${LIBS_INCLUDE_DIR} ${CMAKE_SOURCE_DIR}/3rdparty/zstd/lib)
+target_link_libraries(kyty_shim_formatted_buffer_norm_tests PRIVATE libzstd_static)
+set_target_properties(kyty_shim_formatted_buffer_norm_tests PROPERTIES CXX_EXTENSIONS OFF)
+configure_host_test_executable(kyty_shim_formatted_buffer_norm_tests)
+add_dependencies(kyty_shim_formatted_buffer_norm_tests agc_frame_replay)
+add_test(NAME kyty_shim_formatted_buffer_norm COMMAND kyty_shim_formatted_buffer_norm_tests $<TARGET_FILE:agc_frame_replay>)
+set_tests_properties(kyty_shim_formatted_buffer_norm PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77
+        PASS_REGULAR_EXPRESSION "kyty_shim_formatted_buffer_norm: ok")
 add_test_executable(kyty_shim_wave64_cross_lane_tests ${CMAKE_CURRENT_SOURCE_DIR}/Wave64CrossLane.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../../Execution/src/FrameCapture.cpp)
 target_include_directories(kyty_shim_wave64_cross_lane_tests PRIVATE ${LIBS_INCLUDE_DIR} ${CMAKE_SOURCE_DIR}/3rdparty/zstd/lib)
@@ -1073,7 +1083,8 @@ set_tests_properties(kyty_shim_cross_queue_recycled_label_own_tick PROPERTIES TI
         PASS_REGULAR_EXPRESSION "kyty_shim_cross_queue_recycled_label: order broken: ")
 if(WIN32)
     set_property(TEST kyty_shim_buffer_null_range kyty_shim_uniform_scalar_replay kyty_shim_empty_buffer_replay
-            kyty_shim_empty_buffer_replay_off kyty_shim_bda_load_forms kyty_shim_packed_buffer_format
+            kyty_shim_empty_buffer_replay_off kyty_shim_bda_load_forms
+            kyty_shim_packed_buffer_format kyty_shim_formatted_buffer_norm
             kyty_shim_generic_compute_replay kyty_shim_generic_compute_replay_wide
             kyty_shim_bda_submission_sync kyty_shim_indexed_buffer_reads
             kyty_shim_cross_queue_compute_waits_graphics_data kyty_shim_cross_queue_graphics_waits_compute_data
