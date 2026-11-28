@@ -1067,6 +1067,16 @@ add_dependencies(kyty_shim_packed_buffer_format_tests agc_frame_replay)
 add_test(NAME kyty_shim_packed_buffer_format COMMAND kyty_shim_packed_buffer_format_tests $<TARGET_FILE:agc_frame_replay>)
 set_tests_properties(kyty_shim_packed_buffer_format PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77
         PASS_REGULAR_EXPRESSION "kyty_shim_packed_buffer_format: ok")
+add_test_executable(kyty_shim_buffer_bounds_replay_tests ${CMAKE_CURRENT_SOURCE_DIR}/BufferBoundsReplay.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../Execution/src/FrameCapture.cpp)
+target_include_directories(kyty_shim_buffer_bounds_replay_tests PRIVATE ${LIBS_INCLUDE_DIR} ${CMAKE_SOURCE_DIR}/3rdparty/zstd/lib)
+target_link_libraries(kyty_shim_buffer_bounds_replay_tests PRIVATE libzstd_static)
+set_target_properties(kyty_shim_buffer_bounds_replay_tests PROPERTIES CXX_EXTENSIONS OFF)
+configure_host_test_executable(kyty_shim_buffer_bounds_replay_tests)
+add_dependencies(kyty_shim_buffer_bounds_replay_tests agc_frame_replay)
+add_test(NAME kyty_shim_buffer_bounds_replay COMMAND kyty_shim_buffer_bounds_replay_tests $<TARGET_FILE:agc_frame_replay>)
+set_tests_properties(kyty_shim_buffer_bounds_replay PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77
+        PASS_REGULAR_EXPRESSION "kyty_shim_buffer_bounds_replay: ok")
 add_test_executable(kyty_shim_cross_queue_order_tests ${CMAKE_CURRENT_SOURCE_DIR}/CrossQueueOrder.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../../Execution/src/FrameCapture.cpp)
 target_include_directories(kyty_shim_cross_queue_order_tests PRIVATE ${LIBS_INCLUDE_DIR} ${CMAKE_SOURCE_DIR}/3rdparty/zstd/lib)
@@ -1095,7 +1105,7 @@ set_tests_properties(kyty_shim_cross_queue_recycled_label_own_tick PROPERTIES TI
 if(WIN32)
     set_property(TEST kyty_shim_buffer_null_range kyty_shim_uniform_scalar_replay kyty_shim_empty_buffer_replay
             kyty_shim_empty_buffer_replay_off kyty_shim_bda_load_forms
-            kyty_shim_packed_buffer_format kyty_shim_formatted_buffer_norm
+            kyty_shim_packed_buffer_format kyty_shim_formatted_buffer_norm kyty_shim_buffer_bounds_replay
             kyty_shim_generic_compute_replay kyty_shim_generic_compute_replay_wide
             kyty_shim_bda_submission_sync kyty_shim_indexed_buffer_reads
             kyty_shim_cross_queue_compute_waits_graphics_data kyty_shim_cross_queue_graphics_waits_compute_data

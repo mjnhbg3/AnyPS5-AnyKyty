@@ -11,7 +11,7 @@ uint32_t EmitPushDataLoad(EmitterState& state, uint32_t index) {
 	return value;
 }
 
-static uint32_t EmitShaderDataDwordLoadAt(EmitterState& state, uint32_t dword_index) {
+uint32_t EmitShaderDataDwordLoadAt(EmitterState& state, uint32_t dword_index) {
 	if (state.program.bindings.UsesPushData()) return EmitPushDataLoad(state, dword_index);
 	if (state.shader_data_storage_variable != 0) {
 		const auto pointer = state.builder.AllocateId();
@@ -350,6 +350,7 @@ MemoryResourceAccess PrepareStorageBufferResourceAccess(EmitterState& state,
 		access.byte_offset = state.memory_byte_offsets[static_index];
 		access.length      = state.memory_byte_sizes[static_index];
 	}
+	access.byte_size = access.length;
 	const auto shift = static_cast<uint32_t>(&buffer - state.storage_buffers.data());
 	if (shift != 0u) {
 		access.length = Binary(state, spv::OpShiftRightLogical, TypeU32(state), access.length,

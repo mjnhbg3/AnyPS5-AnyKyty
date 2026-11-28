@@ -535,6 +535,7 @@ inline constexpr auto EmitAddU32 = EmitNative<spv::OpIAdd, IR::Type::U32, uint32
 uint32_t EmitBinaryU32(EmitterState& state, spv::Op opcode, uint32_t lhs, uint32_t rhs);
 
 uint32_t EmitShaderDataDwordLoad(EmitterState& state, uint32_t dword_index);
+uint32_t EmitShaderDataDwordLoadAt(EmitterState& state, uint32_t dword_index);
 uint32_t EmitPushDataLoad(EmitterState& state, uint32_t index);
 
 uint32_t StorageBufferPackedStride(const EmitterState& state, const IR::MemoryInfo& mem);
@@ -553,6 +554,7 @@ struct MemoryResourceAccess {
 	uint32_t              object_pointer   = 0;
 	uint32_t              descriptor_index = 0;
 	uint32_t              length           = 0;
+	uint32_t              byte_size        = 0;
 	uint32_t              byte_offset      = 0;
 	uint32_t              element_bits     = 32;
 	bool                  non_uniform      = false;
