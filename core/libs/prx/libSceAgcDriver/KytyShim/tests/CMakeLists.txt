@@ -317,10 +317,13 @@ if(NOT ANYPS5_KYTY_DLL AND (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
     add_test(NAME kyty_shim_vram_budget COMMAND kyty_shim_vram_budget_tests)
     add_test(NAME kyty_shim_vram_budget_guest_eviction COMMAND kyty_shim_vram_budget_tests guest-eviction)
     add_test(NAME kyty_shim_vram_budget_spill COMMAND kyty_shim_vram_budget_tests spill)
+    add_test(NAME kyty_shim_vram_budget_spill_retry COMMAND kyty_shim_vram_budget_tests spill-retry)
     set_tests_properties(kyty_shim_vram_budget kyty_shim_vram_budget_guest_eviction
             PROPERTIES TIMEOUT 25 SKIP_RETURN_CODE 77 ENVIRONMENT "KYTY_GPU_PIPELINE=0")
     set_tests_properties(kyty_shim_vram_budget_spill
             PROPERTIES TIMEOUT 25 SKIP_RETURN_CODE 77 ENVIRONMENT "KYTY_GPU_PIPELINE=0;KYTY_MEMORY_BUDGET_MB=1")
+    set_tests_properties(kyty_shim_vram_budget_spill_retry
+            PROPERTIES TIMEOUT 25 SKIP_RETURN_CODE 77 ENVIRONMENT "KYTY_GPU_PIPELINE=0")
     target_sources(libSceAgcDriver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/StaleTextureBinding.cpp)
     add_test_executable(kyty_shim_stale_texture_binding_tests ${CMAKE_CURRENT_SOURCE_DIR}/StaleTextureBindingMain.cpp)
     configure_host_test_executable(kyty_shim_stale_texture_binding_tests)

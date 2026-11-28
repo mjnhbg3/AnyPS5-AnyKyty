@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <span>
 #include <string_view>
 
 namespace KytyShimTests {
@@ -15,7 +16,8 @@ struct TestVulkanDevice {
 	vk::detail::DynamicLoader loader;
 	Libs::Graphics::GraphicContext graphics;
 
-	const char* Initialize(bool require_tiling = false, bool sparse_buffers = false) {
+	const char* Initialize(bool require_tiling = false, bool sparse_buffers = false,
+	                       bool discrete_budget = false) {
 		if (!loader.success()) {
 			return "Vulkan loader unavailable";
 		}
@@ -36,7 +38,7 @@ struct TestVulkanDevice {
 			return "Vulkan device enumeration failed";
 		}
 		for (const auto device : devices.value) {
-			if (InitializeDevice(device, require_tiling, sparse_buffers)) {
+			if (InitializeDevice(device, require_tiling, sparse_buffers, discrete_budget)) {
 				return nullptr;
 			}
 		}
@@ -56,11 +58,15 @@ struct TestVulkanDevice {
 	}
 
 private:
-	bool InitializeDevice(vk::PhysicalDevice physical, bool require_tiling, bool sparse_buffers) {
+	bool InitializeDevice(vk::PhysicalDevice physical, bool require_tiling, bool sparse_buffers,
+	                      bool discrete_budget) {
 		vk::PhysicalDeviceVulkan12Properties limits {};
 		vk::PhysicalDeviceVulkan11Properties properties11 {.pNext = &limits};
 		vk::PhysicalDeviceProperties2 properties {.pNext = &properties11};
 		physical.getProperties2(&properties);
+		if (discrete_budget && properties.properties.deviceType != vk::PhysicalDeviceType::eDiscreteGpu) {
+			return false;
+		}
 		if (properties.properties.apiVersion < Libs::Graphics::VULKAN_TARGET_API_VERSION ||
 		    std::min({limits.maxDescriptorSetUpdateAfterBindSampledImages,
 		              limits.maxPerStageDescriptorUpdateAfterBindSampledImages,
@@ -77,9 +83,11 @@ private:
 		}
 		const auto extensions = physical.enumerateDeviceExtensionProperties(nullptr);
 		const std::array required_extensions {
-		    VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME};
+		    VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME,
+		    VK_EXT_MEMORY_BUDGET_EXTENSION_NAME};
+		const auto extension_count = discrete_budget ? required_extensions.size() : required_extensions.size() - 1;
 		if (extensions.result != vk::Result::eSuccess ||
-		    !std::ranges::all_of(required_extensions, [&extensions](const char* extension) {
+		    !std::ranges::all_of(std::span {required_extensions.data(), extension_count}, [&extensions](const char* extension) {
 			    return std::ranges::any_of(extensions.value, [extension](const auto& properties) {
 				    return std::string_view(properties.extensionName.data()) == extension;
 			    });
@@ -133,7 +141,7 @@ private:
 		    .queueCount = 1, .pQueuePriorities = &priority};
 		const vk::DeviceCreateInfo device_info {
 		    .pNext = &features13, .queueCreateInfoCount = 1, .pQueueCreateInfos = &queue_info,
-		    .enabledExtensionCount = static_cast<uint32_t>(required_extensions.size()),
+		    .enabledExtensionCount = static_cast<uint32_t>(extension_count),
 		    .ppEnabledExtensionNames = required_extensions.data(),
 		    .pEnabledFeatures = &core_features};
 		if (physical.createDevice(&device_info, nullptr, &graphics.device) != vk::Result::eSuccess) {
@@ -148,6 +156,7 @@ private:
 			graphics.physical_device_properties.limits.storageImageSampleCounts = vk::SampleCountFlagBits::e1;
 		}
 		graphics.physical_device_memory_properties = physical.getMemoryProperties();
+		graphics.memory_budget_ext_enabled = discrete_budget;
 		graphics.queue_family = queue_info.queueFamilyIndex;
 		graphics.device.getQueue(graphics.queue_family, 0, &graphics.queue);
 		graphics.occlusion_queries_enabled = true;

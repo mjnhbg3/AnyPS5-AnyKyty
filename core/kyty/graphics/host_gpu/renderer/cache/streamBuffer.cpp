@@ -266,6 +266,7 @@ void Buffer::Create(vk::BufferUsageFlags flags) {
 	VmaAllocationInfo allocation_result {};
 	VkBuffer          native_buffer = VK_NULL_HANDLE;
 	VmaAllocator      used_allocator = graphics.allocator;
+	const bool        device_usage = usage == MemoryUsage::DeviceLocal || usage == MemoryUsage::Stream;
 	auto              result        = static_cast<vk::Result>(vmaCreateBuffer(
 	    graphics.allocator, static_cast<const VkBufferCreateInfo*>(buffer_info), &allocation_info,
 	    &native_buffer, &m_allocation, &allocation_result));
@@ -276,8 +277,7 @@ void Buffer::Create(vk::BufferUsageFlags flags) {
 			     spilled_size);
 		}
 	};
-	if (result == vk::Result::eErrorOutOfDeviceMemory &&
-	    (usage == MemoryUsage::DeviceLocal || usage == MemoryUsage::Stream) &&
+	if (result == vk::Result::eErrorOutOfDeviceMemory && device_usage &&
 	    graphics.spill_allocator != nullptr) {
 		const uint32_t non_device_local_types = graphics.NonDeviceLocalMemoryTypes();
 		if (non_device_local_types != 0) {
@@ -288,17 +288,23 @@ void Buffer::Create(vk::BufferUsageFlags flags) {
 			spill_info.requiredFlags           = 0;
 			spill_info.preferredFlags          = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 			spill_info.pool                    = VK_NULL_HANDLE;
-			const auto spill_result            = static_cast<vk::Result>(vmaCreateBuffer(
+			auto spill_result                  = static_cast<vk::Result>(vmaCreateBuffer(
 			    graphics.spill_allocator, static_cast<const VkBufferCreateInfo*>(buffer_info), &spill_info,
 			    &native_buffer, &m_allocation, &allocation_result));
-			if (spill_result == vk::Result::eSuccess) {
-				result         = spill_result;
+			if (spill_result == vk::Result::eErrorOutOfDeviceMemory) {
+				spill_info.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
+				spill_result = static_cast<vk::Result>(vmaCreateBuffer(
+				    graphics.spill_allocator, static_cast<const VkBufferCreateInfo*>(buffer_info), &spill_info,
+				    &native_buffer, &m_allocation, &allocation_result));
+			}
+			result = spill_result;
+			if (result == vk::Result::eSuccess) {
 				used_allocator = graphics.spill_allocator;
 				log_spill(size);
 			}
 		}
 	}
-	if (result == vk::Result::eErrorOutOfDeviceMemory) {
+	if (result == vk::Result::eErrorOutOfDeviceMemory && !device_usage) {
 		LOGF("Buffer allocation ran out of device memory with budget enforcement: size=%" PRIu64
 		     ", memory_usage=%u; retrying without the budget limit\n",
 		     size, static_cast<unsigned>(usage));
@@ -309,14 +315,11 @@ void Buffer::Create(vk::BufferUsageFlags flags) {
 		                    &allocation_info, &native_buffer, &m_allocation, &allocation_result));
 	}
 	m_allocator = used_allocator;
-	if (result != vk::Result::eSuccess && graphics.spill_allocator != nullptr) {
+	if (result != vk::Result::eSuccess && graphics.spill_allocator != nullptr && !device_usage) {
 		VmaAllocationCreateInfo spill_info = allocation_info;
 		spill_info.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
 		spill_info.requiredFlags = 0;
 		spill_info.pool          = VK_NULL_HANDLE;
-		if (usage == MemoryUsage::DeviceLocal) {
-			spill_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
-		}
 		result = static_cast<vk::Result>(
 		    vmaCreateBuffer(graphics.spill_allocator, static_cast<const VkBufferCreateInfo*>(buffer_info), &spill_info,
 		                    &native_buffer, &m_allocation, &allocation_result));

@@ -10,7 +10,10 @@
 #include "kernel/memory.h"
 #include "prx/libkernel/include/Api.hpp"
 
+#include <array>
+#include <atomic>
 #include <chrono>
+#include <cinttypes>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -64,6 +67,89 @@ using namespace Libs::Graphics;
 constexpr uint64_t GiB          = 1024ull * 1024 * 1024;
 constexpr uint64_t GuestBytes   = 0x20000;
 constexpr int      CpuReadWrite = 0x03;
+constexpr uint64_t MiB          = 1024ull * 1024;
+constexpr uint64_t ProbeBytes   = 64 * MiB;
+
+PFN_vkGetPhysicalDeviceMemoryProperties2KHR g_unwrapped_memory_properties = nullptr;
+PFN_vkCreateBuffer g_create_buffer = nullptr;
+PFN_vkAllocateMemory g_allocate_memory = nullptr;
+std::atomic<uint32_t> g_main_requests {0};
+std::atomic<uint32_t> g_spill_requests {0};
+std::atomic<uint32_t> g_main_rejections {0};
+std::atomic<uint32_t> g_spill_rejections {0};
+
+VkResult VKAPI_CALL CreateMainBuffer(VkDevice device, const VkBufferCreateInfo* info,
+                                     const VkAllocationCallbacks* callbacks, VkBuffer* buffer) {
+	g_main_requests.fetch_add(1, std::memory_order_relaxed);
+	return g_create_buffer(device, info, callbacks, buffer);
+}
+
+VkResult VKAPI_CALL CreateSpillBuffer(VkDevice device, const VkBufferCreateInfo* info,
+                                      const VkAllocationCallbacks* callbacks, VkBuffer* buffer) {
+	g_spill_requests.fetch_add(1, std::memory_order_relaxed);
+	return g_create_buffer(device, info, callbacks, buffer);
+}
+
+VkResult VKAPI_CALL AllocateMainMemory(VkDevice device, const VkMemoryAllocateInfo* info,
+                                       const VkAllocationCallbacks* callbacks, VkDeviceMemory* memory) {
+	if (g_main_requests.load(std::memory_order_relaxed) == 1) {
+		g_main_rejections.fetch_add(1, std::memory_order_relaxed);
+		return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+	}
+	return g_allocate_memory(device, info, callbacks, memory);
+}
+
+VkResult VKAPI_CALL AllocateSpillMemory(VkDevice device, const VkMemoryAllocateInfo* info,
+                                        const VkAllocationCallbacks* callbacks, VkDeviceMemory* memory) {
+	if (g_spill_requests.load(std::memory_order_relaxed) == 1) {
+		g_spill_rejections.fetch_add(1, std::memory_order_relaxed);
+		return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+	}
+	return g_allocate_memory(device, info, callbacks, memory);
+}
+
+void PrintDriverHeapUsage(VkPhysicalDevice physical, const char* point) {
+	VkPhysicalDeviceMemoryBudgetPropertiesEXT budget {
+	    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+	VkPhysicalDeviceMemoryProperties2 properties {
+	    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2, &budget};
+	g_unwrapped_memory_properties(physical, &properties);
+	for (uint32_t heap = 0; heap < properties.memoryProperties.memoryHeapCount; ++heap) {
+		const auto flags = properties.memoryProperties.memoryHeaps[heap].flags;
+		std::fprintf(stderr, "spill retry %s: driver heap %u%s usage=%" PRIu64 " budget=%" PRIu64 "\n",
+		             point, heap, (flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) ? " device-local" : " host",
+		             static_cast<uint64_t>(budget.heapUsage[heap]),
+		             static_cast<uint64_t>(budget.heapBudget[heap]));
+	}
+}
+
+struct FaultAllocators {
+	VmaAllocator main  = nullptr;
+	VmaAllocator spill = nullptr;
+
+	void Destroy() {
+		if (spill != nullptr) {
+			vmaDestroyAllocator(spill);
+			spill = nullptr;
+		}
+		if (main != nullptr) {
+			vmaDestroyAllocator(main);
+			main = nullptr;
+		}
+	}
+
+	~FaultAllocators() { Destroy(); }
+};
+
+uint64_t AllocationCount(VmaAllocator allocator, uint32_t heap_count) {
+	std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> budgets {};
+	vmaGetHeapBudgets(allocator, budgets.data());
+	uint64_t count = 0;
+	for (uint32_t heap = 0; heap < heap_count; ++heap) {
+		count += budgets[heap].statistics.allocationCount;
+	}
+	return count;
+}
 
 const char* CheckDescriptorPoolRetirement(GraphicContext& graphics) {
 	MasterSemaphore timeline(graphics);
@@ -280,6 +366,102 @@ const char* CheckBudgetLimitAndSpill(GraphicContext& graphics, bool expect_spill
 	return nullptr;
 }
 
+const char* CheckBudgetedBufferSpill(GraphicContext& graphics, bool& skipped) {
+	skipped = false;
+	const auto host_types = graphics.NonDeviceLocalMemoryTypes();
+	if (host_types == 0) {
+		skipped = true;
+		return nullptr;
+	}
+	vk::BufferCreateInfo probe_info {};
+	probe_info.size  = ProbeBytes;
+	probe_info.usage = AllFlags;
+	vk::Buffer probe = nullptr;
+	if (graphics.device.createBuffer(&probe_info, nullptr, &probe) != vk::Result::eSuccess) {
+		return "could not create the buffer memory type probe";
+	}
+	const auto requirements = graphics.device.getBufferMemoryRequirements(probe);
+	graphics.device.destroyBuffer(probe);
+	if ((requirements.memoryTypeBits & host_types) == 0) {
+		skipped = true;
+		return nullptr;
+	}
+	g_unwrapped_memory_properties = reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties2KHR>(
+	    VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceMemoryProperties2);
+	g_create_buffer = VULKAN_HPP_DEFAULT_DISPATCHER.vkCreateBuffer;
+	g_allocate_memory = VULKAN_HPP_DEFAULT_DISPATCHER.vkAllocateMemory;
+	if (g_unwrapped_memory_properties == nullptr || g_create_buffer == nullptr ||
+	    g_allocate_memory == nullptr) {
+		return "Vulkan allocation or memory properties query unavailable";
+	}
+	g_main_requests.store(0, std::memory_order_relaxed);
+	g_spill_requests.store(0, std::memory_order_relaxed);
+	g_main_rejections.store(0, std::memory_order_relaxed);
+	g_spill_rejections.store(0, std::memory_order_relaxed);
+	VmaVulkanFunctions functions {};
+	functions.vkGetInstanceProcAddr = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr;
+	functions.vkGetDeviceProcAddr   = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr;
+	VmaVulkanFunctions main_functions = functions;
+	main_functions.vkCreateBuffer = &CreateMainBuffer;
+	main_functions.vkAllocateMemory = &AllocateMainMemory;
+	VmaVulkanFunctions spill_functions = functions;
+	spill_functions.vkCreateBuffer = &CreateSpillBuffer;
+	spill_functions.vkAllocateMemory = &AllocateSpillMemory;
+	VmaAllocatorCreateInfo create {};
+	create.instance         = graphics.instance;
+	create.physicalDevice   = graphics.physical_device;
+	create.device           = graphics.device;
+	create.pVulkanFunctions = &main_functions;
+	create.vulkanApiVersion = VULKAN_TARGET_API_VERSION;
+	create.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT |
+	               VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
+	create.preferredLargeHeapBlockSize = 64 * MiB;
+	FaultAllocators allocators;
+	if (vmaCreateAllocator(&create, &allocators.main) != VK_SUCCESS) {
+		return "could not create the test main allocator";
+	}
+	create.pVulkanFunctions = &spill_functions;
+	if (vmaCreateAllocator(&create, &allocators.spill) != VK_SUCCESS) {
+		return "could not create the test spill allocator";
+	}
+	GraphicContext fixture;
+	fixture.instance                          = graphics.instance;
+	fixture.physical_device                   = graphics.physical_device;
+	fixture.physical_device_properties        = graphics.physical_device_properties;
+	fixture.physical_device_memory_properties = graphics.physical_device_memory_properties;
+	fixture.device                            = graphics.device;
+	fixture.allocator                         = allocators.main;
+	fixture.spill_allocator                   = allocators.spill;
+	fixture.memory_budget_ext_enabled         = true;
+	fixture.queue_family                      = graphics.queue_family;
+	RenderContext renderer(graphics);
+	PrintDriverHeapUsage(graphics.physical_device, "before");
+	const char* failure = nullptr;
+	{
+		Buffer buffer(fixture, renderer.GetCommandScheduler(), MemoryUsage::DeviceLocal, 0, AllFlags,
+		              ProbeBytes);
+		PrintDriverHeapUsage(graphics.physical_device, "while allocated");
+		const auto heap_count = graphics.physical_device_memory_properties.memoryHeapCount;
+		const auto main_count  = AllocationCount(allocators.main, heap_count);
+		const auto spill_count = AllocationCount(allocators.spill, heap_count);
+		std::fprintf(stderr, "spill retry allocation: main=%" PRIu64 " spill=%" PRIu64 " device-local=%u\n",
+		             main_count, spill_count, static_cast<unsigned>(buffer.IsDeviceLocal()));
+		std::fprintf(stderr, "spill retry synthetic OOM: main calls=%u rejected=%u spill calls=%u rejected=%u\n",
+		             g_main_requests.load(std::memory_order_relaxed),
+		             g_main_rejections.load(std::memory_order_relaxed),
+		             g_spill_requests.load(std::memory_order_relaxed),
+		             g_spill_rejections.load(std::memory_order_relaxed));
+		if (main_count != 0 || spill_count != 1 || buffer.IsDeviceLocal() ||
+		    g_main_rejections.load(std::memory_order_relaxed) == 0 ||
+		    g_spill_rejections.load(std::memory_order_relaxed) == 0) {
+			failure = "budget retry used the main allocator or device-local memory";
+		}
+	}
+	allocators.Destroy();
+	PrintDriverHeapUsage(graphics.physical_device, "after");
+	return failure;
+}
+
 const char* CheckVramCase(GraphicContext& graphics, uint64_t address) {
 	VramBudgetTestAccess::SetReportedMemory(graphics, (address == 0 ? 16 : 6) * GiB, 0);
 
@@ -303,16 +485,17 @@ const char* CheckVramCase(GraphicContext& graphics, uint64_t address) {
 extern "C" int RunKytyVramBudgetTest(int mode) {
 	const char* name = mode == 1 ? "kyty_shim_vram_budget_guest_eviction"
 	                 : mode == 2 ? "kyty_shim_vram_budget_spill"
+	                 : mode == 3 ? "kyty_shim_vram_budget_spill_retry"
 	                             : "kyty_shim_vram_budget";
 	Common::InitializeThreads();
 	Config::Initialize();
 	Config::Load(Config::ConfigOptions {});
 	KytyShimTests::TestVulkanDevice gpu;
 	const bool required = std::getenv("ANYPS5_REQUIRE_VULKAN") != nullptr;
-	if (const auto* unavailable = gpu.Initialize()) {
+	if (const auto* unavailable = gpu.Initialize(false, false, mode == 3)) {
 		std::fprintf(stderr, "%s: %s, no usable Vulkan device (%s)\n",
-		             name, required ? "FAILED" : "skipped", unavailable);
-		return required ? 1 : 77;
+		             name, required && mode != 3 ? "FAILED" : "skipped", unavailable);
+		return required && mode != 3 ? 1 : 77;
 	}
 	if (!gpu.graphics.CreateAllocator()) {
 		if (mode == 2) {
@@ -322,6 +505,20 @@ extern "C" int RunKytyVramBudgetTest(int mode) {
 		}
 		std::fprintf(stderr, "%s: FAILED: could not create the allocator\n", name);
 		return 1;
+	}
+	if (mode == 3) {
+		bool skipped = false;
+		const auto* failure = CheckBudgetedBufferSpill(gpu.graphics, skipped);
+		if (failure != nullptr) {
+			std::fprintf(stderr, "%s: FAILED: %s\n", name, failure);
+			return 1;
+		}
+		if (skipped) {
+			std::fprintf(stderr, "%s: skipped, no compatible non-device-local buffer memory type\n", name);
+			return 77;
+		}
+		std::printf("%s: ok\n", name);
+		return 0;
 	}
 	if (mode != 1) {
 		bool skipped = false;
