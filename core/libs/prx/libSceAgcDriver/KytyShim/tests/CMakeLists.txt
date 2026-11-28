@@ -675,6 +675,9 @@ add_test(NAME kyty_shim_compute_correlated_phi COMMAND kyty_shim_compute_executi
 set_tests_properties(kyty_shim_compute_correlated_phi PROPERTIES TIMEOUT 20 SKIP_RETURN_CODE 77
         PASS_REGULAR_EXPRESSION "correlated phi execution: folded, all lane outputs checked"
         FAIL_REGULAR_EXPRESSION "terminate called|FAILED")
+add_test(NAME kyty_shim_compute_inline_f16 COMMAND kyty_shim_compute_execution_tests inline-f16)
+set_tests_properties(kyty_shim_compute_inline_f16 PROPERTIES TIMEOUT 20 SKIP_RETURN_CODE 77
+        PASS_REGULAR_EXPRESSION "inline f16 constants: 64/64 lanes checked" FAIL_REGULAR_EXPRESSION "terminate called|FAILED")
 
 add_test_executable(kyty_shim_pair_codegen_tests ${CMAKE_CURRENT_SOURCE_DIR}/PairCodegen.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/Log.cpp)
 target_include_directories(kyty_shim_pair_codegen_tests PRIVATE ${LIBS_INCLUDE_DIR})

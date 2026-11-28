@@ -1039,6 +1039,35 @@ void MultiplyThenAddRoundsProduct(const Gpu& gpu) {
 	          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr});
 }
 
+alignas(256) constexpr std::array<uint32_t, 26> InlineF16Code {
+    0x34020082u, 0x34060084u, 0xe0302000u, 0x80000401u, 0xe0302004u, 0x80000501u, 0xbf8c3f70u,
+    0x641408f2u, 0x6a1608f5u, 0x64180af8u, 0x7e1a16f0u, 0x7e1c16f8u, 0x7e1e16f3u,
+    0xe0702000u, 0x80010a03u, 0xe0702004u, 0x80010b03u, 0xe0702008u, 0x80010c03u,
+    0xe070200cu, 0x80010d03u, 0xe0702010u, 0x80010e03u, 0xe0702014u, 0x80010f03u, 0xbf810000u,
+};
+
+void InlineF16Constants(const Gpu& gpu) {
+	constexpr const char* Test = "inline f16 constants";
+	constexpr std::array<uint32_t, 4> Input {0x3400u, 0x3800u, 0x3c00u, 0x4000u};
+	constexpr std::array<uint32_t, 4> Added {0x3d00u, 0x3e00u, 0x4000u, 0x4200u};
+	constexpr std::array<uint32_t, 4> Multiplied {0xb800u, 0xbc00u, 0xc000u, 0xc400u};
+	g_input.fill(0u);
+	for (uint32_t tid = 0; tid < Threads; ++tid) g_input[tid * Inputs] = Input[tid % Input.size()];
+	Require(RunInputOutput(gpu, Test, InlineF16Code, Threads), "inline f16 constants dispatch did not run");
+	for (uint32_t tid = 0; tid < Threads; ++tid) {
+		const auto* in = &g_input[tid * Inputs];
+		const auto* out = &g_output[tid * Results];
+		const auto row = tid % Input.size();
+		CheckResult(Test, "v_add_f16 +1.0", tid, in, out[0] & 0xffffu, Added[row]);
+		CheckResult(Test, "v_mul_f16 -2.0", tid, in, out[1] & 0xffffu, Multiplied[row]);
+		CheckResult(Test, "v_add_f16 reciprocal", tid, in, out[2] & 0xffffu, 0x3118u);
+		CheckResult(Test, "v_cvt_f32_f16 +0.5", tid, in, out[3], 0x3f000000u);
+		CheckResult(Test, "v_cvt_f32_f16 reciprocal", tid, in, out[4], 0x3e230000u);
+		CheckResult(Test, "v_cvt_f32_f16 -1.0", tid, in, out[5], 0xbf800000u);
+	}
+	std::printf("inline f16 constants: %u/%u lanes checked\n", Threads, Threads);
+}
+
 void SamplerSpill(const Gpu& gpu) {
 	constexpr uint32_t Threads = HostSubgroup;
 	alignas(256) std::array<uint32_t, Threads> output;
@@ -1127,7 +1156,9 @@ int main(int argc, char** argv) {
 	auto        gpu = OpenGpu(why);
 	if (!gpu) return NoDevice(why);
 	const std::string_view test = argc == 2 ? argv[1] : "";
-	if (test == "sampler-spill" || test == "correlated-phi") {
+	if (test == "inline-f16") {
+		InlineF16Constants(*gpu);
+	} else if (test == "sampler-spill" || test == "correlated-phi") {
 		const auto* name = test == "sampler-spill" ? "sampler spill" : "correlated phi";
 		const auto subgroup32 = ComputeSubgroup32(*gpu, HostSubgroup);
 		if (subgroup32 == Subgroup32::Unavailable) {
