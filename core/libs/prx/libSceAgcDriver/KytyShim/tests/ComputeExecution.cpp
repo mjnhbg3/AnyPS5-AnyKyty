@@ -73,6 +73,7 @@ struct Gpu {
 	uint32_t                           max_subgroup = 0;
 	uint32_t                           max_compute_subgroups = 0;
 	bool                               subgroup_control = false;
+	bool                               shader_float16 = false;
 	std::string                        name;
 };
 
@@ -141,6 +142,7 @@ std::optional<Gpu> OpenGpu(const char*& why) {
 	features11.pNext = &features12;
 	features.pNext   = &features11;
 	gpu.physical.getFeatures2(&features);
+	gpu.shader_float16 = features12.shaderFloat16 == VK_TRUE;
 	features13.robustImageAccess = VK_FALSE;
 	features.features.robustBufferAccess = VK_FALSE;
 
@@ -295,6 +297,7 @@ struct Dispatch {
 	uint32_t                           threads = 0;
 	uint32_t                           wave_size = WaveSize;
 	std::optional<uint32_t>            sampler_word;
+	bool                               software_float16 = false;
 };
 
 std::optional<uint32_t> StoredWord(const Recompiler::IR::Program& program) {
@@ -331,6 +334,11 @@ bool Run(const Gpu& gpu, const Dispatch& dispatch, std::optional<uint32_t>* stor
 	options.user_data_base        = 0u;
 	options.shader_hash           = 0x5ad0u;
 	options.dump_ir               = false;
+	Recompiler::Spirv::Profile profile = Recompiler::Spirv::DefaultProfile;
+	if (dispatch.software_float16) {
+		profile.native_float16 = false;
+		options.profile = &profile;
+	}
 	options.user_data             = dispatch.user_data;
 	options.input_info.compute    = &compute;
 	const auto source             = Recompiler::PrepareShaderSource(dispatch.code, options);
@@ -597,14 +605,16 @@ void FillInput(uint64_t state, std::span<const std::array<uint32_t, 4>> edges, b
 	}
 }
 
-bool RunInputOutput(const Gpu& gpu, const char* name, std::span<const uint32_t> code, uint32_t threads) {
+bool RunInputOutput(const Gpu& gpu, const char* name, std::span<const uint32_t> code, uint32_t threads,
+                    bool software_float16 = false) {
 	g_output.fill(0xdeadbeefu);
 	Dispatch dispatch;
-	dispatch.name      = name;
-	dispatch.code      = code;
-	dispatch.threads   = threads;
-	dispatch.user_data = TwoBuffers(BufferDescriptor(g_input.data(), threads * Inputs, 4u, StrideWord3),
-	                                BufferDescriptor(g_output.data(), threads * Results, 4u, StrideWord3));
+	dispatch.name             = name;
+	dispatch.code             = code;
+	dispatch.threads          = threads;
+	dispatch.software_float16 = software_float16;
+	dispatch.user_data        = TwoBuffers(BufferDescriptor(g_input.data(), threads * Inputs, 4u, StrideWord3),
+	                                       BufferDescriptor(g_output.data(), threads * Results, 4u, StrideWord3));
 	return Run(gpu, dispatch);
 }
 
@@ -1039,31 +1049,43 @@ void MultiplyThenAddRoundsProduct(const Gpu& gpu) {
 	          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr});
 }
 
-alignas(256) constexpr std::array<uint32_t, 26> InlineF16Code {
+alignas(256) constexpr std::array<uint32_t, 38> InlineF16Code {
     0x34020082u, 0x34060084u, 0xe0302000u, 0x80000401u, 0xe0302004u, 0x80000501u, 0xbf8c3f70u,
     0x641408f2u, 0x6a1608f5u, 0x64180af8u, 0x7e1a16f0u, 0x7e1c16f8u, 0x7e1e16f3u,
+    0x7e2016f1u, 0x7e2216f4u, 0x7e2416f6u, 0x7e2616f7u,
     0xe0702000u, 0x80010a03u, 0xe0702004u, 0x80010b03u, 0xe0702008u, 0x80010c03u,
-    0xe070200cu, 0x80010d03u, 0xe0702010u, 0x80010e03u, 0xe0702014u, 0x80010f03u, 0xbf810000u,
+    0xe070200cu, 0x80010d03u, 0xe0702010u, 0x80010e03u, 0xe0702014u, 0x80010f03u,
+    0xe0702018u, 0x80011003u, 0xe070201cu, 0x80011103u, 0xe0702020u, 0x80011203u,
+    0xe0702024u, 0x80011303u, 0xbf810000u,
 };
 
 void InlineF16Constants(const Gpu& gpu) {
-	constexpr const char* Test = "inline f16 constants";
 	constexpr std::array<uint32_t, 4> Input {0x3400u, 0x3800u, 0x3c00u, 0x4000u};
 	constexpr std::array<uint32_t, 4> Added {0x3d00u, 0x3e00u, 0x4000u, 0x4200u};
 	constexpr std::array<uint32_t, 4> Multiplied {0xb800u, 0xbc00u, 0xc000u, 0xc400u};
 	g_input.fill(0u);
 	for (uint32_t tid = 0; tid < Threads; ++tid) g_input[tid * Inputs] = Input[tid % Input.size()];
-	Require(RunInputOutput(gpu, Test, InlineF16Code, Threads), "inline f16 constants dispatch did not run");
-	for (uint32_t tid = 0; tid < Threads; ++tid) {
-		const auto* in = &g_input[tid * Inputs];
-		const auto* out = &g_output[tid * Results];
-		const auto row = tid % Input.size();
-		CheckResult(Test, "v_add_f16 +1.0", tid, in, out[0] & 0xffffu, Added[row]);
-		CheckResult(Test, "v_mul_f16 -2.0", tid, in, out[1] & 0xffffu, Multiplied[row]);
-		CheckResult(Test, "v_add_f16 reciprocal", tid, in, out[2] & 0xffffu, 0x3118u);
-		CheckResult(Test, "v_cvt_f32_f16 +0.5", tid, in, out[3], 0x3f000000u);
-		CheckResult(Test, "v_cvt_f32_f16 reciprocal", tid, in, out[4], 0x3e230000u);
-		CheckResult(Test, "v_cvt_f32_f16 -1.0", tid, in, out[5], 0xbf800000u);
+	for (const bool native: {false, true}) {
+		if (native && !gpu.shader_float16) continue;
+		const auto* mode = native ? "inline f16 constants native" : "inline f16 constants software";
+		Require(RunInputOutput(gpu, mode, InlineF16Code, Threads, !native),
+		        std::string(mode) + " dispatch did not run");
+		for (uint32_t tid = 0; tid < Threads; ++tid) {
+			const auto* in = &g_input[tid * Inputs];
+			const auto* out = &g_output[tid * Results];
+			const auto row = tid % Input.size();
+			CheckResult(mode, "v_add_f16 +1.0", tid, in, out[0] & 0xffffu, Added[row]);
+			CheckResult(mode, "v_mul_f16 -2.0", tid, in, out[1] & 0xffffu, Multiplied[row]);
+			CheckResult(mode, "v_add_f16 reciprocal", tid, in, out[2] & 0xffffu, 0x3118u);
+			CheckResult(mode, "v_cvt_f32_f16 +0.5", tid, in, out[3], 0x3f000000u);
+			CheckResult(mode, "v_cvt_f32_f16 reciprocal", tid, in, out[4], 0x3e230000u);
+			CheckResult(mode, "v_cvt_f32_f16 -1.0", tid, in, out[5], 0xbf800000u);
+			CheckResult(mode, "v_cvt_f32_f16 -0.5", tid, in, out[6], 0xbf000000u);
+			CheckResult(mode, "v_cvt_f32_f16 +2.0", tid, in, out[7], 0x40000000u);
+			CheckResult(mode, "v_cvt_f32_f16 +4.0", tid, in, out[8], 0x40800000u);
+			CheckResult(mode, "v_cvt_f32_f16 -4.0", tid, in, out[9], 0xc0800000u);
+		}
+		std::printf("inline f16 constants: %s half path checked\n", native ? "native" : "software");
 	}
 	std::printf("inline f16 constants: %u/%u lanes checked\n", Threads, Threads);
 }
